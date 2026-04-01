@@ -14,6 +14,11 @@
 <script src="html2canvas.min.js"></script>
 
 <style>
+  /* Menghilangkan watermark/credit Leaflet Map */
+.leaflet-control-attribution {
+    display: none !important;
+}
+
   :root {
     --bg-body: #f1f5f9; --bg-card: #ffffff;
     --text-main: #0f172a; --text-muted: #475569;
@@ -152,6 +157,37 @@
   #btnSaveEdit:hover { transform: translateY(-4px); box-shadow: 0 15px 25px -5px rgba(29, 78, 216, 0.5); }
   .toast { position: fixed; bottom: 30px; right: 30px; background: var(--text-main); color: white; padding: 14px 22px; border-radius: 8px; opacity: 0; transition: 0.3s; z-index: 9999; pointer-events: none;}
   .toast.show { opacity: 1; }
+/* =========================================
+   PATCH: MENGHILANGKAN GAP PUTIH DI BAWAH
+   ========================================= */
+body {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+
+/* Memaksa konten utama mengisi ruang tanpa sisa margin */
+.main-content, 
+.container, 
+main {
+    flex: 1 0 auto;
+    margin-bottom: 0 !important;
+    padding-bottom: 20px !important; /* Jarak aman sebelum footer */
+}
+
+/* Memaksa footer/credit selalu berada paling bawah tanpa spasi ekstra */
+footer, 
+.footer, 
+.credit, 
+#footer,
+div[style*="text-align: center; margin-top: 20px;"] {
+    flex-shrink: 0;
+    margin-top: auto !important;
+    padding-top: 10px;
+    padding-bottom: 10px;
+    background-color: var(--bg-body); /* Menyamakan warna latar */
+}
+/* ========================================= */
 </style>
 </head>
 <body>
@@ -261,7 +297,7 @@
         </div>
         
         <div style="margin-top: auto; background: var(--blue-light); padding: 12px; border-radius: 8px; border: 1px solid var(--blue-primary);">
-            <span style="font-size: 11px; color: var(--blue-primary); font-weight: 800; text-transform: uppercase;">Peserta Wilayah:</span><br>
+            <span style="font-size: 11px; color: var(--blue-primary); font-weight: 800; text-transform: uppercase;">Peserta Aktif:</span><br>
             <strong id="kv-peserta" style="font-size: 13px; color: var(--blue-primary); line-height: 1.4;">-</strong>
             <div style="margin-top: 6px; font-size: 11px; color: var(--blue-primary); border-top: 1px solid var(--blue-primary); padding-top: 6px;">
                 Dari <strong id="kv-jml-bank" style="font-size: 12px;">0</strong> Kastip Terdaftar
@@ -575,6 +611,18 @@
 const SEC_U = "YWRtaW4="; 
 const SEC_P = "bWFnYW5n";
 const STORAGE_KEY = 'DashboardKastip_Data_vFINAL'; 
+
+// ==========================================
+// 1A. PERSISTENT SCROLL LOCK (TAMBAHKAN INI)
+// ==========================================
+if ('scrollRestoration' in history) {
+    history.scrollRestoration = 'manual'; // Mengunci kendali scroll pada skrip kita
+}
+
+window.addEventListener('scroll', () => {
+    localStorage.setItem('Kastip_Persistent_Scroll', window.scrollY);
+});
+// ==========================================
 
 // DOM Caching Engine
 const DOM_CACHE = {};
@@ -986,8 +1034,17 @@ function initGeoMap(D) {
 }
 
 function handleFileUpload(event) {
-  const file = event.target.files[0]; if (!file) return;
+  if (typeof XLSX === 'undefined') {
+      alert("CRITICAL ERROR: Library 'xlsx.full.min.js' tidak ditemukan atau gagal dimuat.");
+      return;
+  }
 
+  const file = event.target.files[0];
+  if (!file) return;
+
+  // ---------------------------------------------------------
+  // MODUL KML (PETA GEOSPASIAL) 
+  // ---------------------------------------------------------
   if (file.name.toLowerCase().endsWith('.kml')) {
       const reader = new FileReader();
       reader.onload = function(e) {
@@ -1010,61 +1067,237 @@ function handleFileUpload(event) {
       }; reader.readAsText(file); event.target.value = ''; return;
   }
   
+  // ---------------------------------------------------------
+  // MODUL EXCEL INGESTION V5: SYMMETRIC NORMALIZER
+  // ---------------------------------------------------------
   const reader = new FileReader();
   reader.onload = function(e) {
     try {
-      const workbook = XLSX.read(new Uint8Array(e.target.result), {type: 'array'});
-      const jsonData = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], {raw: false});
-      if (jsonData.length === 0 || !jsonData[0].hasOwnProperty('KPwDN')) return showToast("❌ Excel kosong/Format salah!");
-      
-      let count = 0;
-      let targetTahun = currentTahun;     
-      let targetTriwulan = currentTriwulan; 
+      const workbook = XLSX.read(new Uint8Array(e.target.result), {type: 'array', cellDates: true});
+      let totalDataAbsorbed = 0;
+      let targetTahun = currentTahun;
 
-      // [KOREKSI AUTO-ROUTING]
-      if (currentTriwulan === 'ALL' && (!jsonData[0].hasOwnProperty('Tahun') || !jsonData[0].hasOwnProperty('Triwulan'))) {
-          showToast("❌ Upload di mode Rekap 1 Tahun membutuhkan kolom 'Tahun' dan 'Triwulan' di Excel!"); 
-          return;
+      // ENGINE PENYELARAS NAMA KOLOM (Sangat Aman & Cermat)
+      function standardizeKey(str) {
+          if (!str) return '';
+          let s = String(str).toLowerCase().replace(/[^a-z0-9]/g, '');
+
+          // 1. Seragamkan penyebutan bulan Excel ke format Schema Dashboard
+          s = s.replace(/jan|apr|jul|okt/g, 'bulan1');
+          s = s.replace(/feb|mei|ags|nov/g, 'bulan2');
+          s = s.replace(/mar|jun|sep|des/g, 'bulan3');
+          s = s.replace(/padabulan/g, 'bulan');
+          s = s.replace(/selamabulan/g, 'bulan');
+
+          // 2. Koreksi Khusus untuk Kolom Proporsi Biaya & Bantuan
+          if (s.includes('bantuanoperasional') || s.includes('biayaoperasional')) {
+              s = 'biayaoperasional' + (s.includes('bulan1')?'bulan1':s.includes('bulan2')?'bulan2':s.includes('bulan3')?'bulan3':'');
+          }
+          if (s.includes('pengolahanutle')) {
+              s = 'biayapengolahanutle' + (s.includes('bulan1')?'bulan1':s.includes('bulan2')?'bulan2':s.includes('bulan3')?'bulan3':'');
+          }
+          if ((s.includes('biayaasuransi') || s.includes('penggantianbiayaasuransi')) && !s.includes('perubahan') && !s.includes('nama') && !s.includes('jenis')) {
+              s = 'biayaasuransi' + (s.includes('bulan1')?'bulan1':s.includes('bulan2')?'bulan2':s.includes('bulan3')?'bulan3':'');
+          }
+          if (s.includes('pemeliharaan')) s = 'biayapemeliharaan';
+          if (s.includes('pendirian')) s = 'biayapendirian';
+
+          // 3. Koreksi Khusus untuk Panel UTLE
+          if (s.includes('utle') && s.includes('triwulan')) {
+              if (s.includes('persentase')) s = 'persentaseutletriwulan';
+              else if (s.includes('jumlah')) s = 'jumlahutletriwulan';
+          }
+          if (s.includes('persentase') && s.includes('utle') && s.includes('bulan')) {
+              s = 'persentaseutledarisetoran' + (s.includes('bulan1')?'bulan1':s.includes('bulan2')?'bulan2':'bulan3');
+          }
+          if (s.includes('jumlah') && s.includes('utle') && s.includes('bulan')) {
+              s = 'jumlahutleyangdisetor' + (s.includes('bulan1')?'bulan1':s.includes('bulan2')?'bulan2':'bulan3');
+          }
+
+          // 4. Koreksi Khusus Identitas & Transaksi Terbesar
+          if (s === 'namabankpengelola' || s === 'pengelola') s = 'pengelola';
+          if (s === 'namabankpeserta' || s === 'jumlahbankpesertaaktif' || s === 'peserta') s = 'peserta';
+          if (s.includes('persentasekepesertaan')) s = 'persentasekepesertaan';
+
+          if (s.includes('penarikan') && s.includes('terbesar')) {
+              if (s.includes('nominal')) s = 'nominaljumlahpenarikan';
+              else if (s.includes('frekuensi')) s = 'frekuensipenarikan';
+              else if (s.includes('alasan')) s = 'alasanpenarikan';
+              else s = 'penarikanterbesar';
+          }
+          if (s.includes('penyetoran') && s.includes('terbesar')) {
+              if (s.includes('nominal')) s = 'nominaljumlahpenyetoran';
+              else if (s.includes('frekuensi')) s = 'frekuensipenyetoran';
+              else if (s.includes('alasan')) s = 'alasanpenyetoran';
+              else s = 'penyetoranterbesar';
+          }
+
+          // 5. Koreksi Pelaporan & Lain-lain
+          if (s.includes('jumlahrealisasipenukaran')) s = 'jumlahrealisasipenukaran';
+          if (s.includes('perubahandataasuransi')) s = 'apakahadaperubahandataasuransi';
+          if (s.includes('pjpurdiwilayah')) s = 'apakahterdapatpjpurdiwilayahkastitipan';
+          if (s.includes('pelaporanterlambat')) s = 'apakahterdapatpelaporanyangterlambat';
+          if (s.includes('nopks') || s === 'nomorpks') s = 'nomorpks';
+          if (s.includes('tglpks') || s === 'tanggalpks') s = 'tanggalpks';
+
+          // Jika tidak masuk aturan koreksi (seperti Inflow, Outflow, Saldo Akhir), biarkan apa adanya.
+          return s; 
       }
 
-      jsonData.forEach(row => {
-        if(row['KPwDN'] && row['Kas Titipan']) {
-            let rowTahun = row['Tahun'] ? row['Tahun'].toString().trim() : targetTahun;
-            let rowTriwulan = row['Triwulan'] ? row['Triwulan'].toString().toUpperCase().trim() : targetTriwulan;
-            
-            if (rowTriwulan === 'ALL') rowTriwulan = 'Q1'; 
+      workbook.SheetNames.forEach(sheetName => {
+          const sheet = workbook.Sheets[sheetName];
+          const rawData = XLSX.utils.sheet_to_json(sheet, {header: 1, defval: null});
+          if (!rawData || rawData.length === 0) return;
 
-            let slotId = row['KPwDN'] + '_' + row['Kas Titipan'];
-            
-            if(!DATA_STORE[rowTahun]) DATA_STORE[rowTahun] = {}; 
-            if(!DATA_STORE[rowTahun][rowTriwulan]) DATA_STORE[rowTahun][rowTriwulan] = {};
-            if(!DATA_STORE[rowTahun][rowTriwulan][slotId]) DATA_STORE[rowTahun][rowTriwulan][slotId] = {}; 
-            
-            const mNames = { 'Q1': ['Jan', 'Feb', 'Mar'], 'Q2': ['Apr', 'Mei', 'Jun'], 'Q3': ['Jul', 'Ags', 'Sep'], 'Q4': ['Okt', 'Nov', 'Des'] };
-            let m1 = mNames[rowTriwulan]?.[0] || 'Bulan 1';
-            let m2 = mNames[rowTriwulan]?.[1] || 'Bulan 2';
-            let m3 = mNames[rowTriwulan]?.[2] || 'Bulan 3';
+          let headerIndex = -1;
+          for (let i = 0; i < Math.min(10, rawData.length); i++) {
+              if (Array.isArray(rawData[i])) {
+                  let found = rawData[i].some(cell => {
+                      if (cell === null || cell === undefined) return false;
+                      return String(cell).toLowerCase().replace(/[^a-z0-9]/g, '') === 'kpwdn';
+                  });
+                  if (found) { headerIndex = i; break; }
+              }
+          }
 
-            DATA_SCHEMA.forEach(f => {
-                let dLabel = f.label.replace('Bulan 1', m1).replace('Bulan 2', m2).replace('Bulan 3', m3);
-                
-                if(!f.computed && row[dLabel] !== undefined) {
-                    const parsed = (f.type === 'number' || f.type === 'currency' || f.type === 'percent') ? parseFloat(row[dLabel].toString().toUpperCase().replace(/[^0-9.\-E+]+/g, "")) : row[dLabel];
-                    DATA_STORE[rowTahun][rowTriwulan][slotId][f.id] = (f.type === 'number' || f.type === 'currency') && isNaN(parsed) ? 0 : parsed;
-                }
-            });
-            DATA_STORE[rowTahun][rowTriwulan][slotId].kpw = row['KPwDN']; 
-            DATA_STORE[rowTahun][rowTriwulan][slotId].kt = row['Kas Titipan'];
-            computeData(DATA_STORE[rowTahun][rowTriwulan][slotId]); 
-            count++;
-        }
+          if (headerIndex === -1) return;
+
+          let detectedTriwulan = currentTriwulan === 'ALL' ? 'Q4' : currentTriwulan;
+          let sName = sheetName.toLowerCase();
+          if (sName.includes('q1') || sName.includes('triwulan 1')) detectedTriwulan = 'Q1';
+          else if (sName.includes('q2') || sName.includes('triwulan 2')) detectedTriwulan = 'Q2';
+          else if (sName.includes('q3') || sName.includes('triwulan 3')) detectedTriwulan = 'Q3';
+          else if (sName.includes('q4') || sName.includes('triwulan 4')) detectedTriwulan = 'Q4';
+          else {
+              let headerStr = rawData[headerIndex].map(h => String(h||'').toLowerCase().trim()).join(" ");
+              if (/\b(jan|feb|mar)\b/.test(headerStr)) detectedTriwulan = 'Q1';
+              else if (/\b(apr|mei|jun)\b/.test(headerStr)) detectedTriwulan = 'Q2';
+              else if (/\b(jul|ags|sep)\b/.test(headerStr)) detectedTriwulan = 'Q3';
+              else if (/\b(okt|nov|des)\b/.test(headerStr)) detectedTriwulan = 'Q4';
+          }
+
+          const headerRow = rawData[headerIndex];
+          const normalizedExcelHeaders = headerRow.map(h => standardizeKey(h));
+
+          for (let i = headerIndex + 1; i < rawData.length; i++) {
+              const rowArr = rawData[i];
+              if (!rowArr || rowArr.length === 0) continue;
+
+              // Merakit baris data menggunakan Header yang sudah distandardisasi
+              const rowDataObj = {};
+              for(let j=0; j<normalizedExcelHeaders.length; j++) {
+                  const k = normalizedExcelHeaders[j];
+                  if(k && rowArr[j] !== null && rowArr[j] !== undefined) {
+                      rowDataObj[k] = rowArr[j];
+                  }
+              }
+
+              let kpwVal = rowDataObj[standardizeKey('KPwDN')];
+              let ktVal = rowDataObj[standardizeKey('Kas Titipan')];
+
+              if(kpwVal && ktVal) {
+                  let strTahun = rowDataObj[standardizeKey('Tahun')];
+                  let strTriwulan = rowDataObj[standardizeKey('Triwulan')];
+                  
+                  let rowTahun = strTahun ? strTahun.toString().trim() : targetTahun;
+                  let rowTriwulan = strTriwulan ? strTriwulan.toString().toUpperCase().trim() : detectedTriwulan;
+                  
+                  let slotId = kpwVal + '_' + ktVal;
+                  
+                  if(!DATA_STORE[rowTahun]) DATA_STORE[rowTahun] = {};
+                  if(!DATA_STORE[rowTahun][rowTriwulan]) DATA_STORE[rowTahun][rowTriwulan] = {};
+                  if(!DATA_STORE[rowTahun][rowTriwulan][slotId]) DATA_STORE[rowTahun][rowTriwulan][slotId] = {};
+                  
+                  DATA_SCHEMA.forEach(f => {
+                      // Standardisasi nama label Schema agar 100% cocok dengan Excel
+                      let targetKey = standardizeKey(f.label);
+                      const rawVal = rowDataObj[targetKey];
+                      
+                      if(!f.computed && rawVal !== undefined && rawVal !== null && rawVal !== '') {
+                          let parsed = rawVal;
+                          
+                          let isForcePercent = (f.id === 'pct_kepesertaan' || targetKey.includes('persentase'));
+                          
+                          if (f.type === 'number' || f.type === 'currency' || f.type === 'percent' || isForcePercent) {
+                              let strVal = String(rawVal).trim().toLowerCase();
+                              let isPercentText = strVal.includes('%');
+                              
+                              strVal = strVal.replace(/[rp\s%]/g, ''); 
+                              
+                              let dotCount = (strVal.match(/\./g) || []).length;
+                              let commaCount = (strVal.match(/,/g) || []).length;
+
+                              if (commaCount === 1 && dotCount > 0 && strVal.lastIndexOf(',') > strVal.lastIndexOf('.')) {
+                                  strVal = strVal.replace(/\./g, '').replace(',', '.');
+                              } else if (dotCount === 1 && commaCount > 0 && strVal.lastIndexOf('.') > strVal.lastIndexOf(',')) {
+                                  strVal = strVal.replace(/,/g, '');
+                              } else if (commaCount > 0 && dotCount === 0) {
+                                  let parts = strVal.split(',');
+                                  if (commaCount > 1) {
+                                      strVal = strVal.replace(/,/g, '');
+                                  } else {
+                                      if (parts[1].replace(/[^0-9]/g, '').length === 3 && !isPercentText) {
+                                          strVal = strVal.replace(/,/g, ''); 
+                                      } else {
+                                          strVal = strVal.replace(',', '.'); 
+                                      }
+                                  }
+                              } else if (dotCount > 0 && commaCount === 0) {
+                                  let parts = strVal.split('.');
+                                  if (dotCount > 1) {
+                                      strVal = strVal.replace(/\./g, '');
+                                  } else {
+                                      if (parts[1].replace(/[^0-9]/g, '').length === 3 && !isPercentText) {
+                                          strVal = strVal.replace(/\./g, '');
+                                      }
+                                  }
+                              }
+
+                              parsed = parseFloat(strVal.replace(/[^0-9.\-]/g, ''));
+                              if (isNaN(parsed)) parsed = 0;
+
+                              if (f.type === 'percent' || isForcePercent) {
+                                  if (!isPercentText && Math.abs(parsed) > 0 && Math.abs(parsed) <= 2) {
+                                      parsed = Math.round(parsed * 10000) / 100;
+                                  }
+                              }
+
+                          } else { 
+                              parsed = String(rawVal); 
+                          }
+                          DATA_STORE[rowTahun][rowTriwulan][slotId][f.id] = parsed;
+                      }
+                  });
+
+                  DATA_STORE[rowTahun][rowTriwulan][slotId].kpw = kpwVal;
+                  DATA_STORE[rowTahun][rowTriwulan][slotId].kt = ktVal;
+                  computeData(DATA_STORE[rowTahun][rowTriwulan][slotId]); 
+                  totalDataAbsorbed++;
+              }
+          }
       });
-      saveData(); 
-      initSelectors(); 
-      renderAll(); 
-      showToast(`✅ ${count} data laporan di-upload & di-routing otomatis!`);
-    } catch (err) { console.error(err); showToast('❌ Gagal membaca file Excel.'); }
-  }; reader.readAsArrayBuffer(file); event.target.value = '';
+
+      if (totalDataAbsorbed > 0) {
+          saveData(); 
+          initSelectors(); 
+          if(currentTriwulan === 'ALL') {
+              renderAll();
+          } else {
+              changePeriode(); 
+          }
+          showToast(`✅ MASTER FILE SUKSES! ${totalDataAbsorbed} data berhasil dipetakan secara simetris.`);
+      } else {
+          showToast("❌ Tidak ada data valid yang bisa dibaca. Pastikan baris di bawah judul tidak kosong.");
+      }
+      
+    } catch (err) { 
+        console.error(err); 
+        alert("CRASH REPORT: Gagal memproses Master File.\nPesan Error: " + err.message);
+        showToast('❌ Gagal membaca file Master.'); 
+    }
+  }; 
+  reader.readAsArrayBuffer(file); 
+  event.target.value = '';
 }
 
 function exportDataExcel() {
@@ -1442,17 +1675,35 @@ function renderEditPanel() {
       el('btnSaveEdit').style.display = 'none'; el('formHelperText').style.display = 'none'; return;
   }
   el('btnSaveEdit').style.display = 'flex'; el('formHelperText').style.display = 'block';
+
+  // --- 1. AMBIL KOORDINAT SCROLL TERAKHIR ---
+  // Ambil dari localStorage (untuk F5) atau dari posisi saat ini (untuk tombol Kalkulasi)
+  const lastScrollPos = localStorage.getItem('Kastip_Persistent_Scroll') || window.scrollY;
+  let activeInputId = (document.activeElement && document.activeElement.tagName === 'INPUT') ? document.activeElement.id : null;
+
+  let savedOpen = [];
+  try {
+      savedOpen = JSON.parse(localStorage.getItem('Kastip_Last_Open_Categories')) || [];
+  } catch(e) { savedOpen = []; }
+
   const D = DATA_STORE[currentTahun]?.[currentTriwulan]?.[currentKt] || {}; 
   const mNames = { 'Q1': ['Jan', 'Feb', 'Mar'], 'Q2': ['Apr', 'Mei', 'Jun'], 'Q3': ['Jul', 'Ags', 'Sep'], 'Q4': ['Okt', 'Nov', 'Des'] };
   let m1 = mNames[currentTriwulan]?.[0] || 'Bulan 1', m2 = mNames[currentTriwulan]?.[1] || 'Bulan 2', m3 = mNames[currentTriwulan]?.[2] || 'Bulan 3';
 
-  // --- TOMBOL TAMBAH PARAMETER (INJEKSI BARU) ---
   let html = `<div style="margin-bottom: 20px;"><button class="btn btn-outline" style="border-color: #1d4ed8; color: #1d4ed8; font-weight: 800;" onclick="addCustomParameter()">Tambah Parameter Data</button></div>`;
   
   const cats = [...new Set(DATA_SCHEMA.map(f => f.cat))];
   cats.forEach((cat, index) => {
     let dCat = cat.replace('Bulan 1', m1).replace('Bulan 2', m2).replace('Bulan 3', m3);
-    html += `<div class="accordion-item"><div class="accordion-header ${index===0?'active':''}" onclick="toggleAcc(this)"><span style="font-size:14px;">📁 ${dCat}</span><span class="acc-icon" style="font-size:12px; color:var(--text-muted);">${index===0?'▲':'▼'}</span></div><div class="accordion-body" style="display: ${index===0?'block':'none'};"><div class="edit-grid">`;
+    let isActive = savedOpen.includes(String(index)) || (savedOpen.length === 0 && index === 0);
+    
+    html += `<div class="accordion-item">
+                <div class="accordion-header ${isActive ? 'active' : ''}" data-cat-index="${index}" onclick="toggleAcc(this)">
+                    <span style="font-size:14px;">📁 ${dCat}</span>
+                    <span class="acc-icon" style="font-size:12px; color:var(--text-muted);">${isActive ? '▲' : '▼'}</span>
+                </div>
+                <div class="accordion-body" style="display: ${isActive ? 'block' : 'none'};">
+                    <div class="edit-grid">`;
     
     DATA_SCHEMA.forEach(f => {
       if (f.cat === cat) {
@@ -1460,8 +1711,6 @@ function renderEditPanel() {
         let val = D[f.id] !== undefined ? D[f.id] : '';
         let onInputAttr = (f.type === 'currency' || f.type === 'number') ? `oninput="this.value = this.value.replace(/[^0-9]/g, '').replace(/\\B(?=(\\d{3})+(?!\\d))/g, '.');"` : '';
         if ((f.type === 'currency' || f.type === 'number') && val !== '' && val !== null) val = val.toLocaleString('id-ID'); 
-        
-        // --- TOMBOL HAPUS KHUSUS PARAMETER CUSTOM (INJEKSI BARU) ---
         let deleteBtn = f.isCustom ? `<button onclick="deleteCustomParameter('${f.id}')" style="background:none; border:none; color:var(--red-val); cursor:pointer; font-size:12px; float:right; margin-top:2px;" title="Hapus Parameter Ini">❌</button>` : '';
         
         html += `<div class="edit-group"><label>${dLabel} ${f.computed?'<span class="badge-auto">AUTO</span>':''} ${deleteBtn}</label><input type="${f.type==='percent'?'number':'text'}" id="edit_${f.id}" value="${val}" ${f.computed?'readonly':''} ${onInputAttr}></div>`;
@@ -1469,13 +1718,49 @@ function renderEditPanel() {
     });
     html += `</div></div></div>`;
   });
+  
   el('editFormContainer').innerHTML = html;
+
+  // --- 2. EKSEKUSI PEMULIHAN SCROLL (TIMING DIPERTIRING) ---
+  // Gunakan jeda sedikit lebih lama (100ms) untuk memastikan DOM sudah memanjang sempurna
+  setTimeout(() => {
+      window.scrollTo({
+          top: parseInt(lastScrollPos),
+          behavior: 'instant'
+      });
+      if (activeInputId) {
+          let inp = document.getElementById(activeInputId);
+          if (inp) {
+              inp.focus({ preventScroll: true });
+              let v = inp.value; inp.value = ''; inp.value = v;
+          }
+      }
+  }, 100);
 }
 
 function toggleAcc(header) {
-    const body = header.nextElementSibling; const icon = header.querySelector('.acc-icon');
-    if (header.classList.contains('active')) { header.classList.remove('active'); body.style.display = 'none'; icon.textContent = '▼'; } 
-    else { header.classList.add('active'); body.style.display = 'block'; icon.textContent = '▲'; }
+    const body = header.nextElementSibling;
+    const icon = header.querySelector('.acc-icon');
+    
+    if (header.classList.contains('active')) {
+        header.classList.remove('active');
+        body.style.display = 'none';
+        icon.textContent = '▼';
+    } else {
+        header.classList.add('active');
+        body.style.display = 'block';
+        icon.textContent = '▲';
+    }
+
+    // Update memori kategori yang terbuka
+    let openCats = [];
+    document.querySelectorAll('#editFormContainer .accordion-header.active').forEach(h => {
+        openCats.push(h.getAttribute('data-cat-index'));
+    });
+    localStorage.setItem('Kastip_Last_Open_Categories', JSON.stringify(openCats));
+    
+    // Update juga koordinat scroll saat kategori dibuka/tutup agar presisi
+    localStorage.setItem('Kastip_Persistent_Scroll', window.scrollY);
 }
 
 function applyEdit() {
