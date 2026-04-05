@@ -604,10 +604,11 @@ div[style*="text-align: center; margin-top: 20px;"] {
 // ============================================================
 // 1. SISTEM LOGIN & SECURITY ENGINE (AUTO-SWITCHING)
 // ============================================================
-// Hash utama (SHA-256) aktif saat deploy di GitHub Pages
-const HASH_PASSWORD_BENAR = "3fc108a958e986b72d2fb420e6f24ef3022ea155167bb3098f98018dc22baeb3"; 
-// Hash cadangan aktif saat dibuka offline klik ganda (file:///)
-const FALLBACK_HASH = "bWFnYW5nX29mZmxpbmVfc2VjdXJl"; 
+// Ganti baris ~260 dengan ini:
+const ALLOWED_HASHS = [
+    "3fc108a958e986b72d2fb420e6f24ef3022ea155167bb3098f98018dc22baeb3", //
+    "6cc637ed192a5b6d1948834a362244199c09930776b251219b16858e0a324317"  //
+];
 
 const STORAGE_KEY = 'DashboardKastip_Data_vFINAL'; 
 
@@ -639,29 +640,30 @@ window.onload = () => { if(sessionStorage.getItem('isLoggedIn') === 'true') unlo
 
 // Engine Hashing Adaptif (Mendeteksi Lingkungan Server/Lokal)
 async function hashString(str) {
-    if (window.crypto && window.crypto.subtle && window.location.protocol !== 'file:') {
-        try {
-            const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
-            return Array.prototype.map.call(new Uint8Array(buf), x=>(('00'+x.toString(16)).slice(-2))).join('');
-        } catch (e) { console.warn("Crypto gagal, beralih ke mode fallback"); }
+    if (window.crypto && window.crypto.subtle) {
+        // Standar SHA-256 yang didukung penuh oleh GitHub Pages (HTTPS)
+        const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
+        return Array.prototype.map.call(new Uint8Array(buf), x=>(('00'+x.toString(16)).slice(-2))).join('');
     }
-    // Fallback mode offline (file:///)
-    return btoa(str + "_offline_secure");
+    // Fallback jika dibuka di browser sangat lama
+    return btoa(str);
 }
 
 async function handleLogin(e) {
   e.preventDefault();
-  const u = el('username').value.trim();
+  const u = el('username').value.trim().toLowerCase();
   const p = el('password').value.trim();
   
   const hashedInput = await hashString(p);
   
-  // Memeriksa kebenaran terhadap lingkungan yang sedang aktif
-  if (u.toLowerCase() === 'admin' && (hashedInput === HASH_PASSWORD_BENAR || hashedInput === FALLBACK_HASH)) { 
+  //
+  //
+  if (u === 'admin' && ALLOWED_HASHS.includes(hashedInput)) { 
       sessionStorage.setItem('isLoggedIn', 'true'); 
       unlockDashboard(); 
   } else { 
       el('loginError').style.display = 'block';
+      el('loginError').textContent = "❌ Username atau Password Salah!";
   }
 }
 
