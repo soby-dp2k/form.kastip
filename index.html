@@ -638,15 +638,16 @@ const setStyle = (id, prop, val) => {
 
 window.onload = () => { if(sessionStorage.getItem('isLoggedIn') === 'true') unlockDashboard(); };
 
-// Engine Hashing Adaptif (Mendeteksi Lingkungan Server/Lokal)
 async function hashString(str) {
+    const msgUint8 = new TextEncoder().encode(str); 
     if (window.crypto && window.crypto.subtle) {
-        // Standar SHA-256 yang didukung penuh oleh GitHub Pages (HTTPS)
-        const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
-        return Array.prototype.map.call(new Uint8Array(buf), x=>(('00'+x.toString(16)).slice(-2))).join('');
+        const hashBuffer = await crypto.subtle.digest('SHA-256', msgUint8);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        // Menggunakan padStart untuk memastikan output selalu 2 digit per byte
+        return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
     }
-    // Fallback jika dibuka di browser sangat lama
-    return btoa(str);
+    // Fallback ini hanya akan aktif jika dibuka di browser purba (sebelum 2015)
+    return btoa(str); 
 }
 
 async function handleLogin(e) {
